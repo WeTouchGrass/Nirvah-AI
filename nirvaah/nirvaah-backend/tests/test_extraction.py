@@ -3,9 +3,12 @@ load_dotenv()
 
 import json
 import sys
-sys.path.append(".")
+from pathlib import Path
 
-from extraction import extract_fields
+# Ensure nirvaah-backend/ is on the path when running directly
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from app.agents.extraction import extract_fields
 
 TRANSCRIPTS = [
     {
@@ -104,8 +107,8 @@ def main():
             print(f"  ERROR: {result['error']}")
 
     print(f"\n{'=' * 60}")
-    print(f"RESULT: {total_pass}/5 passed")
-    if total_pass >= 4:
+    print(f"RESULT: {total_pass}/8 passed")
+    if total_pass >= 6:
         print("✓ Extraction prompt ready for pipeline integration.")
     else:
         print("✗ Needs tuning — paste full output to fix.")
