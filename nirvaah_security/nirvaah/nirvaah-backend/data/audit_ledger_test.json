@@ -1,0 +1,41 @@
+[
+    {
+        "record_id": "REC_001",
+        "worker_id": "worker_meena",
+        "timestamp": "2026-03-14T13:08:51.687325+00:00",
+        "previous_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+        "record_snapshot": {
+            "id": "REC_001",
+            "patient": "Sunita",
+            "bp": "110/70",
+            "hb": 10.2
+        },
+        "hash": "57caf2a880350be682b453a57a73c91e3ed773841bc36ec3be889a9d76df3081"
+    },
+    {
+        "record_id": "REC_002",
+        "worker_id": "worker_meena",
+        "timestamp": "2026-03-14T13:08:51.687375+00:00",
+        "previous_hash": "57caf2a880350be682b453a57a73c91e3ed773841bc36ec3be889a9d76df3081",
+        "record_snapshot": {
+            "id": "REC_002",
+            "patient": "Ammu",
+            "bp": "120/80",
+            "hb": 12.1
+        },
+        "hash": "a501abeeacc4cb8510be99e6e860f472d9504f92f5375c1998220f324575bad1"
+    },
+    {
+        "record_id": "REC_003",
+        "worker_id": "worker_meena",
+        "timestamp": "2026-03-14T13:08:51.687400+00:00",
+        "previous_hash": "a501abeeacc4cb8510be99e6e860f472d9504f92f5375c1998220f324575bad1",
+        "record_snapshot": {
+            "id": "REC_003",
+            "patient": "Deepa",
+            "bp": "115/75",
+            "hb": 11.5
+        },
+        "hash": "8d0c40ee58c938b720f4f31a87239aed9f5c3217875fb73317dbd5e8c6154349"
+    }
+]
