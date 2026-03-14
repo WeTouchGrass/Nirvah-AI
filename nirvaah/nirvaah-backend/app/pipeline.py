@@ -15,13 +15,10 @@ from app.agents.extraction import extraction_node
 from app.agents.validation import validation_node
 from app.agents.form_agent import form_agent_node
 from app.agents.sync_agent import sync_node
+from app.agents.insights import insights_node
 
 # ----------------------------------------------------------------
-# STUB NODES for Agents 5-6
-# These are temporary pass-through functions. Each one will be
-# replaced with the real agent as we build them one by one.
-# They are stubs — they do nothing except pass state through and
-# print a message so you can see the graph is running.
+# STUB NODES
 # ----------------------------------------------------------------
 
 
@@ -34,16 +31,6 @@ def clarification_node(state: PipelineState) -> dict:
 def anomaly_node(state: PipelineState) -> dict:
     print("[STUB] anomaly_node running — replace with Agent 5")
     return {"anomaly_score": 0.0, "anomaly_flags": []}
-
-
-def insights_node(state: PipelineState) -> dict:
-    print("[STUB] insights_node running — replace with Agent 6")
-    return {
-        "dropout_risk": 0.0,
-        "eligible_schemes": [],
-        "risk_summary": "",
-        "pipeline_complete": True
-    }
 
 
 # ----------------------------------------------------------------
