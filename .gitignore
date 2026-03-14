@@ -1,1 +1,19 @@
 work/
+venv/
+
+# Environment files
+**/.env
+**/.env.*
+!**/.env.example
+
+# Python artifacts
+**/__pycache__/
+**/*.pyc
+
+# Frontend artifacts
+**/node_modules/
+**/dist/
+
+# Backend secrets and local model binaries
+nirvaah/nirvaah-backend/service-account.json
+nirvaah/nirvaah-backend/models/*.pkl
