@@ -14,8 +14,9 @@ Session TTL: 1800 seconds (30 minutes of inactivity)
 """
 
 import json
+import json
 import os
-from upstash_redis import Redis
+import redis as standard_redis
 from app.transcription import transcribe_audio
 from app.survey_extraction import extract_survey_data
 from app.survey_validation import validate_survey
@@ -28,14 +29,16 @@ from app.notifications import send_whatsapp
 from app.audit_chain import create_audit_entry
 from app.database import supabase
 
-# Read the URL directly, Upstash Redis python SDK expects REDIS_URL or REST_URL 
-# to be passed, but the constructor can take url and token if it's the REST client.
-# Since the codebase previously used celary with standard redis, we'll use standard upstash_redis.Redis
+# Initialize standard redis for session state
 try:
-    redis = Redis(url=os.environ.get('UPSTASH_REDIS_REST_URL', ''), token=os.environ.get('UPSTASH_REDIS_REST_TOKEN', ''))
+    redis_url = os.environ.get('REDIS_URL')
+    if redis_url:
+        redis_client = standard_redis.from_url(redis_url, decode_responses=True)
+    else:
+        redis_client = None
 except Exception as e:
-    print(f"[SURVEY] Warning: Upstash Redis init failed: {e}")
-    redis = None
+    print(f"[SURVEY] Warning: Redis init failed: {e}")
+    redis_client = None
 
 SESSION_TTL = 1800
 
@@ -86,27 +89,27 @@ CONFIRM_MESSAGES = {
 # ── Session helpers ──────────────────────────────────────────────────────────
 
 def get_session(phone: str) -> dict | None:
-    if not redis:
+    if not redis_client:
         return None
     try:
-        raw = redis.get(f'survey:state:{phone}')
+        raw = redis_client.get(f'survey:state:{phone}')
         return json.loads(raw) if raw else None
     except Exception:
         return None
 
 def set_session(phone: str, data: dict):
-    if not redis:
+    if not redis_client:
         return
     try:
-        redis.set(f'survey:state:{phone}', json.dumps(data), ex=SESSION_TTL)
+        redis_client.set(f'survey:state:{phone}', json.dumps(data), ex=SESSION_TTL)
     except Exception:
         pass
 
 def clear_session(phone: str):
-    if not redis:
+    if not redis_client:
         return
     try:
-        redis.delete(f'survey:state:{phone}')
+        redis_client.delete(f'survey:state:{phone}')
     except Exception:
         pass
 
@@ -123,7 +126,7 @@ async def handle_survey_message(phone: str, text: str = None, audio_bytes: bytes
     Stage 3 — session stage=awaiting_voice: process voice note
     """
     # If redis isn't configured, we can't run stateful surveys
-    if not redis:
+    if not redis_client:
         send_whatsapp(phone, "Survey mode is not available right now. Please notify your supervisor.")
         return
 
