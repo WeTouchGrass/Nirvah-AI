@@ -4,6 +4,7 @@ import { supabase } from '../lib/supabase'
 export function useRealtimeRecords() {
     const [records, setRecords] = useState([])
     useEffect(() => {
+        if (!supabase) return
         // Load the last 50 records immediately when the page opens
         supabase.from('records').select('*')
             .order('created_at', { ascending: false }).limit(50)

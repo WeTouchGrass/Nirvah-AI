@@ -4,6 +4,7 @@ import { supabase } from '../lib/supabase'
 export function useRealtimeAlerts() {
     const [alerts, setAlerts] = useState([])
     useEffect(() => {
+        if (!supabase) return
         supabase.from('alerts').select('*')
             .order('created_at', { ascending: false }).limit(20)
             .then(({ data }) => setAlerts(data || []))

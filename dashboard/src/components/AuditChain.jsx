@@ -7,6 +7,7 @@ export function AuditChain() {
   const [verifying, setVerifying] = useState(false)
 
   useEffect(() => {
+    if (!supabase) return
     supabase.from('audit_log').select('*')
       .order('id', { ascending: false }).limit(20)
       .then(({ data }) => setEntries(data || []))
