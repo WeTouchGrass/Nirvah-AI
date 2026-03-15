@@ -38,25 +38,7 @@ def get_supabase() -> Client:
         _supabase_client = create_client(url, key)
     return _supabase_client
 
-# ----------------------------------------------------------------
-# CELERY APP
-# Uses Upstash Redis as the message broker and result backend.
-# ----------------------------------------------------------------
-celery_app = Celery(
-    "nirvaah",
-    broker=os.environ.get("REDIS_URL", ""),
-    backend=os.environ.get("REDIS_URL", "")
-)
-
-celery_app.conf.update(
-    task_serializer="json",
-    accept_content=["json"],
-    result_serializer="json",
-    timezone="Asia/Kolkata",        # IST — important for off-hours anomaly detection
-    enable_utc=True,
-    task_track_started=True,
-    task_acks_late=True,            # acknowledge after completion, not on pickup
-)
+# No Celery app required on free tier. Using direct writes.
 
 # ----------------------------------------------------------------
 # REDIS CLARIFICATION HELPERS
@@ -228,17 +210,7 @@ def write_to_google_sheets(
         return {"status": "failed", "error": str(e)}
 
 
-# ----------------------------------------------------------------
-# CELERY BACKGROUND TASK
-# ----------------------------------------------------------------
-
-@celery_app.task(
-    bind=True,
-    max_retries=3,
-    name="nirvaah.sync_record"
-)
 def sync_record_task(
-    self,
     mapped_forms: dict,
     validated_fields: dict,
     sender_phone: str,
@@ -246,15 +218,7 @@ def sync_record_task(
     record_id: str
 ):
     """
-    Celery background task that performs the actual database writes.
-
-    Runs outside the FastAPI request cycle so the HTTP response can
-    return to Twilio immediately. This task is picked up and executed
-    by a separate Celery worker process.
-
-    Retry strategy:
-      - Supabase write: no retry. If it fails, record the error and stop.
-      - Google Sheets write: retry up to 3 times with exponential backoff.
+    Performs the actual database writes synchronously.
     """
     results = {}
 
@@ -273,15 +237,9 @@ def sync_record_task(
         return results
 
     # Step 2 — Write to Google Sheets (supplementary, with retry)
+    # Using a simple try/except without Celery retries for simplicity
     sheets_result = write_to_google_sheets(mapped_forms, validated_fields, record_id)
     results["google_sheets"] = sheets_result
-
-    # Retry with exponential backoff: 5s, 10s, 20s
-    if sheets_result["status"] == "failed":
-        raise self.retry(
-            countdown=5 * (2 ** self.request.retries),
-            exc=Exception(sheets_result.get("error", "google_sheets_write_failed"))
-        )
 
     results["record_id"] = record_id
     return results
@@ -291,25 +249,19 @@ def sync_record_task(
 # MAIN SYNC FUNCTION
 # ----------------------------------------------------------------
 
-async def sync_record(
+def sync_record(
     mapped_forms: dict,
     validated_fields: dict,
     sender_phone: str,
     input_source: str = "unknown"
 ) -> dict:
     """
-    Queues the sync task on Celery and returns immediately.
-    Does NOT wait for the task to complete.
-
-    The record_id is generated here (before queuing) so that:
-    1. We can return it immediately to the pipeline for audit chain use
-    2. The record_id is consistent between Supabase and Google Sheets
-    3. We can reference the record in notifications before it is written
+    Runs the database writes synchronously.
     """
     record_id = str(uuid.uuid4())
 
-    # Queue the task — this returns almost instantly
-    sync_record_task.delay(
+    # Run the write directly
+    results = sync_record_task(
         mapped_forms=mapped_forms,
         validated_fields=validated_fields,
         sender_phone=sender_phone,
@@ -317,12 +269,7 @@ async def sync_record(
         record_id=record_id
     )
 
-    # Return optimistic status — queued, not written yet
-    return {
-        "supabase": "queued",
-        "google_sheets": "queued",
-        "record_id": record_id
-    }
+    return results
 
 
 # ----------------------------------------------------------------
@@ -351,20 +298,8 @@ def sync_node(state: PipelineState) -> dict:
         }
 
     try:
-        # Run the async sync_record function
-        try:
-            loop = asyncio.get_event_loop()
-            sync_status = loop.run_until_complete(
-                sync_record(mapped_forms, validated_fields, sender_phone, input_source)
-            )
-        except RuntimeError:
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                future = pool.submit(
-                    asyncio.run,
-                    sync_record(mapped_forms, validated_fields, sender_phone, input_source)
-                )
-                sync_status = future.result()
+        # Run the sync_record function synchronously
+        sync_status = sync_record(mapped_forms, validated_fields, sender_phone, input_source)
 
         return {
             "sync_status": sync_status,
