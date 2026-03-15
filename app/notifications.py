@@ -10,10 +10,19 @@ def get_twilio_client():
 def send_whatsapp(to_phone: str, message: str):
     """Sends a WhatsApp message back to an ASHA worker."""
     client = get_twilio_client()
-    sandbox_number = os.environ.get('TWILIO_SANDBOX_NUMBER')
+    
+    # Ensure from_ number is cleanly formatted
+    sandbox_number = os.environ.get('TWILIO_SANDBOX_NUMBER', '')
+    if not sandbox_number.startswith('whatsapp:'):
+        sandbox_number = f"whatsapp:{sandbox_number}"
+        
+    # Ensure to_ phone is cleanly formatted (remove any existing prefixes or pluses, then add exactly one +)
+    clean_to = to_phone.replace('whatsapp:', '').replace('+', '').strip()
+    to_formatted = f"whatsapp:+{clean_to}"
+    
     client.messages.create(
         from_=sandbox_number,
-        to=f'whatsapp:{to_phone}',
+        to=to_formatted,
         body=message
     )
     print(f'[NOTIFY] Sent WhatsApp to {to_phone}')
