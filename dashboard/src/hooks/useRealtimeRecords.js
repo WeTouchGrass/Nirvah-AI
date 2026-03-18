@@ -6,13 +6,13 @@ export function useRealtimeRecords() {
     useEffect(() => {
         if (!supabase) return
         // Load the last 50 records immediately when the page opens
-        supabase.from('records').select('*')
+        supabase.from('visits').select('*')
             .order('created_at', { ascending: false }).limit(50)
             .then(({ data }) => setRecords(data || []))
         // Listen for NEW records arriving in real time
         const channel = supabase.channel('records-feed')
             .on('postgres_changes',
-                { event: 'INSERT', schema: 'public', table: 'records' },
+                { event: 'INSERT', schema: 'public', table: 'visits' },
                 payload => setRecords(prev => [payload.new, ...prev.slice(0, 49)])
             ).subscribe()
         return () => supabase.removeChannel(channel)

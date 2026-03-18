@@ -2,7 +2,7 @@ import time
 import httpx
 
 # Replace this with your actual Render URL
-RENDER_URL = 'https://nirvaah-backend.onrender.com/health'
+RENDER_URL = 'https://nirvaah-ai-jucz.onrender.com/health'
 
 print('Keep-alive started. Press Ctrl+C to stop.')
 while True:

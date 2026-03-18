@@ -1,0 +1,947 @@
+﻿commit 9720e166712d59a5f3bce3d911e244bbff7a5bbf
+Author: .ima-a <sanjay87111@gmail.com>
+Date:   Sun Mar 15 14:12:10 2026 +0530
+
+     addded security feature for asha worker and put survery
+
+diff --git a/.env.example b/.env.example
+index 49289f6..7e41ac9 100644
+--- a/.env.example
++++ b/.env.example
+@@ -24,3 +24,9 @@ GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
+ 
+ # === Validation ===
+ CLARIFICATION_CONFIDENCE_THRESHOLD=0.70
++
++# === SOS Emergency System ===
++SOS_KEYWORD=jalebi
++SOS_SUPERVISOR_PHONE=+919876543210
++SOS_NEARBY_ASHA_PHONE=+919876543211
++SOS_AUTHORITY_PHONE=+919876543212
+diff --git a/app/sos.py b/app/sos.py
+new file mode 100644
+index 0000000..4ba4652
+--- /dev/null
++++ b/app/sos.py
+@@ -0,0 +1,195 @@
++"""
++app/sos.py ΓÇö Secret SOS Emergency Alert System for Nirvaah AI.
++
++ASHA workers in rural India sometimes face dangerous situations during
++home visits. This module lets them send a secret code word (e.g. "jalebi")
++via WhatsApp to silently trigger emergency alerts to:
++  1. Supervisor
++  2. Nearby ASHA worker
++  3. Local authority
++
++The response is SILENT ΓÇö no confirmation is sent back to the worker,
++so no one nearby sees a reply on their phone.
++
++Uses a SEPARATE Twilio bot (different SID/token) so the SOS alerts
++come from a different number than the normal health bot.
++"""
++
++import os
++from datetime import datetime, timezone, timedelta
++from twilio.rest import Client
++
++
++# ----------------------------------------------------------------
++# CONFIGURATION
++# ----------------------------------------------------------------
++
++def get_sos_keyword() -> str:
++    """Get the SOS keyword from environment. Default: 'jalebi'."""
++    return os.environ.get("SOS_KEYWORD", "jalebi").strip().lower()
++
++
++def get_emergency_contacts() -> list[dict]:
++    """
++    Get list of emergency contacts from environment variables.
++    Each contact has a phone number and a role label.
++    """
++    contacts = []
++
++    supervisor = os.environ.get("SOS_SUPERVISOR_PHONE")
++    if supervisor:
++        contacts.append({"phone": supervisor.strip(), "role": "Supervisor"})
++
++    nearby_asha = os.environ.get("SOS_NEARBY_ASHA_PHONE")
++    if nearby_asha:
++        contacts.append({"phone": nearby_asha.strip(), "role": "Nearby ASHA Worker"})
++
++    authority = os.environ.get("SOS_AUTHORITY_PHONE")
++    if authority:
++        contacts.append({"phone": authority.strip(), "role": "District Authority"})
++
++    return contacts
++
++
++# ----------------------------------------------------------------
++# TWILIO CLIENT
++# ----------------------------------------------------------------
++
++def _get_main_twilio_client() -> Client:
++    """Returns the main Twilio bot client."""
++    sid = os.environ.get("TWILIO_ACCOUNT_SID")
++    token = os.environ.get("TWILIO_AUTH_TOKEN")
++    if not sid or not token:
++        raise RuntimeError("Main Twilio credentials not configured")
++    return Client(sid, token)
++
++
++# ----------------------------------------------------------------
++# KEYWORD DETECTION
++# ----------------------------------------------------------------
++
++def is_sos_trigger(body: str) -> bool:
++    """
++    Check if the incoming message is the SOS keyword.
++    Exact match only (case-insensitive, whitespace-stripped).
++    'jalebi' ΓåÆ True
++    'JALEBI' ΓåÆ True
++    '  jalebi  ' ΓåÆ True
++    'hello jalebi' ΓåÆ False (must be exact, not substring)
++    """
++    if not body:
++        return False
++    keyword = get_sos_keyword()
++    return body.strip().lower() == keyword
++
++
++# ----------------------------------------------------------------
++# ALERT MESSAGES
++# ----------------------------------------------------------------
++
++def build_sos_message(sender_phone: str) -> str:
++    """Build the emergency WhatsApp message text."""
++    # IST timestamp
++    ist_offset = timedelta(hours=5, minutes=30)
++    ist_now = datetime.now(timezone.utc) + ist_offset
++    timestamp = ist_now.strftime("%d %b %Y, %I:%M %p IST")
++
++    return (
++        f"≡ƒÜ¿ *EMERGENCY SOS ΓÇö Nirvaah AI* ≡ƒÜ¿\n\n"
++        f"An ASHA worker has triggered a distress signal.\n\n"
++        f"≡ƒô▒ Worker phone: {sender_phone}\n"
++        f"≡ƒòÉ Time: {timestamp}\n\n"
++        f"ΓÜá∩╕Å *Immediate assistance may be needed.*\n"
++        f"Please try to contact the worker or dispatch help to their last known location."
++    )
++
++
++# ----------------------------------------------------------------
++# SEND ALERTS
++# ----------------------------------------------------------------
++
++async def handle_sos(sender_phone: str):
++    """
++    Main SOS handler. Called from webhook.py when keyword detected.
++
++    - WhatsApp messages sent via the MAIN Twilio Whatsapp Bot
++    - Voice calls sent via the MAIN Twilio Phone Number (just rings, no speech)
++
++    Does NOT send any response back to the worker (silent).
++    """
++    print(f"[SOS] ≡ƒÜ¿ EMERGENCY triggered by {sender_phone}")
++
++    contacts = get_emergency_contacts()
++    if not contacts:
++        print("[SOS] WARNING: No emergency contacts configured!")
++        return
++
++    message_text = build_sos_message(sender_phone)
++
++    main_client = None
++    try:
++        main_client = _get_main_twilio_client()
++    except Exception as e:
++        print(f"[SOS] Γ¥î Twilio client error: {e}")
++        return
++
++    # --- WhatsApp alerts ---
++    sandbox_number = os.environ.get("TWILIO_SANDBOX_NUMBER", "")
++    for contact in contacts:
++        phone = contact["phone"]
++        role = contact["role"]
++        try:
++            if sandbox_number:
++                main_client.messages.create(
++                    from_=sandbox_number,
++                    to=f"whatsapp:{phone}",
++                    body=message_text
++                )
++                print(f"[SOS] Γ£à WhatsApp sent to {role} ({phone})")
++        except Exception as e:
++            print(f"[SOS] Γ¥î WhatsApp to {role} failed: {e}")
++
++    # --- Voice calls (just ring, no speech needed) ---
++    # Voice calls use TWILIO_PHONE_NUMBER, NOT the WhatsApp Sandbox Number
++    voice_number = os.environ.get("TWILIO_PHONE_NUMBER", "")
++    if voice_number:
++        for contact in contacts:
++            phone = contact["phone"]
++            role = contact["role"]
++            try:
++                # Minimal TwiML: just hold the line open so the phone rings
++                main_client.calls.create(
++                    from_=voice_number,
++                    to=phone,
++                    twiml='<Response><Pause length="30"/></Response>'
++                )
++                print(f"[SOS] Γ£à Call placed to {role} ({phone})")
++            except Exception as e:
++                print(f"[SOS] Γ¥î Call to {role} failed: {e}")
++    else:
++        print("[SOS] ΓÜá∩╕Å No TWILIO_PHONE_NUMBER configured ΓÇö skipping voice calls")
++
++    # Log to Supabase for audit trail
++    try:
++        _log_sos_event(sender_phone, contacts)
++    except Exception as e:
++        print(f"[SOS] Audit log failed (non-critical): {e}")
++
++    print(f"[SOS] Alert sequence complete for {sender_phone}")
++
++
++def _log_sos_event(sender_phone: str, contacts: list):
++    """Log the SOS event to Supabase alerts table for audit trail."""
++    try:
++        from app.agents.anomaly import get_supabase
++        get_supabase().table("alerts").insert({
++            "worker_phone": sender_phone,
++            "flag_type": "SOS_EMERGENCY",
++            "anomaly_score": 1.0,
++            "severity": "critical",
++            "dismissed": False,
++            "created_at": datetime.now(timezone.utc).isoformat()
++        }).execute()
++    except Exception:
++        pass  # Audit logging must never block the SOS response
++
+diff --git a/app/survey_extraction.py b/app/survey_extraction.py
+new file mode 100644
+index 0000000..b8dcc30
+--- /dev/null
++++ b/app/survey_extraction.py
+@@ -0,0 +1,61 @@
++"""
++app/survey_extraction.py
++--------------------
++Loads survey-specific Claude prompts and calls the Anthropic API.
++Same pattern as existing extraction logic ΓÇö just a different prompt file.
++"""
++
++import json
++import os
++import anthropic
++
++PROMPT_FILES = {
++    'leprosy':    'data/survey_prompt_leprosy.txt',
++    'pulse_polio': 'data/survey_prompt_pulse_polio.txt',
++    'above_30':   'data/survey_prompt_above_30.txt',
++    'pregnant':   'data/survey_prompt_pregnant.txt',
++}
++
++def load_survey_prompt(survey_type: str) -> str:
++    path = PROMPT_FILES.get(survey_type)
++    if not path:
++        raise ValueError(f"Unknown survey type: {survey_type}")
++    
++    # Path is relative to the project root
++    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++    full_path = os.path.join(base_dir, path)
++    
++    with open(full_path, 'r', encoding='utf-8') as f:
++        return f.read()
++
++async def extract_survey_data(transcript: str, survey_type: str) -> dict:
++    # Get API key
++    api_key = os.environ.get("ANTHROPIC_API_KEY")
++    if not api_key:
++        print("[SURVEY] WARNING: ANTHROPIC_API_KEY not set!")
++        return {'survey_type': survey_type, 'confidence': 0.0, '_parse_error': "API Key missing"}
++
++    client = anthropic.AsyncAnthropic(api_key=api_key)
++    system_prompt = load_survey_prompt(survey_type)
++    
++    try:
++        response = await client.messages.create(
++            model='claude-3-5-sonnet-20241022',
++            max_tokens=1000,
++            temperature=0.1,
++            system=system_prompt,
++            messages=[{'role': 'user', 'content': transcript}],
++        )
++        text = response.content[0].text
++        
++        # Strip markdown fences if Claude returned them
++        if text.startswith("```"):
++            text = text.split("```")[1]
++            if text.lower().startswith("json"):
++                text = text[4:]
++        text = text.strip()
++        
++        return json.loads(text)
++    except Exception as e:
++        print(f"[SURVEY] Extraction failed: {e}")
++        return {'survey_type': survey_type, 'confidence': 0.0, '_parse_error': str(e)}
+diff --git a/app/survey_handler.py b/app/survey_handler.py
+new file mode 100644
+index 0000000..0b46256
+--- /dev/null
++++ b/app/survey_handler.py
+@@ -0,0 +1,234 @@
++"""
++survey_handler.py
++-----------------
++Manages survey session state in Upstash Redis and routes incoming
++WhatsApp messages through the correct survey flow.
++
++Session state stored in Redis, keyed by sender_phone:
++    survey:state:<phone>  ΓåÆ  JSON:
++        {
++            "stage": "menu" | "awaiting_voice",
++            "survey_type": null | "leprosy" | "pulse_polio" | "above_30" | "pregnant"
++        }
++Session TTL: 1800 seconds (30 minutes of inactivity)
++"""
++
++import json
++import os
++from upstash_redis import Redis
++from app.transcription import transcribe_audio
++from app.survey_extraction import extract_survey_data
++from app.survey_validation import validate_survey
++from app.survey_notifications import (
++    build_survey_confirmation,
++    build_worker_referral_alert,
++    build_supervisor_referral_alert,
++)
++from app.notifications import send_whatsapp
++from app.audit_chain import create_audit_entry
++from app.database import supabase
++
++# Read the URL directly, Upstash Redis python SDK expects REDIS_URL or REST_URL 
++# to be passed, but the constructor can take url and token if it's the REST client.
++# Since the codebase previously used celary with standard redis, we'll use standard upstash_redis.Redis
++try:
++    redis = Redis(url=os.environ.get('UPSTASH_REDIS_REST_URL', ''), token=os.environ.get('UPSTASH_REDIS_REST_TOKEN', ''))
++except Exception as e:
++    print(f"[SURVEY] Warning: Upstash Redis init failed: {e}")
++    redis = None
++
++SESSION_TTL = 1800
++
++SURVEY_TYPES = {
++    '1': 'leprosy',
++    '2': 'pulse_polio',
++    '3': 'above_30',
++    '4': 'pregnant',
++}
++
++MENU_MESSAGE = """Welcome to Nirvaah AI Survey Mode ≡ƒôï
++
++Please reply with the number of the survey you want to conduct:
++
++1∩╕ÅΓâú  Leprosy Survey
++2∩╕ÅΓâú  Pulse Polio Survey
++3∩╕ÅΓâú  People Above 30 Years
++4∩╕ÅΓâú  Pregnant Ladies
++
++Reply with 1, 2, 3, or 4.
++Type CANCEL to exit."""
++
++CONFIRM_MESSAGES = {
++    'leprosy': (
++        "You selected: *Leprosy Survey* Γ£à\n\n"
++        "Please send a voice note summarising your findings for this household ΓÇö "
++        "number of people screened, anyone with rashes, pin-prick test results, "
++        "and who needs PHC referral."
++    ),
++    'pulse_polio': (
++        "You selected: *Pulse Polio Survey* Γ£à\n\n"
++        "Please send a voice note ΓÇö number of children under 5, whether they were "
++        "vaccinated today, any guest children, any children with fever/vomiting/"
++        "diarrhoea, and whether the house needs a follow-up."
++    ),
++    'above_30': (
++        "You selected: *Above 30 Screening* Γ£à\n\n"
++        "Please send a voice note ΓÇö for each person screened include their name, "
++        "age, BP reading, blood sugar value (fasting or random), and any other complaints."
++    ),
++    'pregnant': (
++        "You selected: *Pregnant Ladies Survey* Γ£à\n\n"
++        "Please send a voice note with the usual ANC details ΓÇö name, BP, Hb, "
++        "weight, IFA tablets, next visit date, and any concerns."
++    ),
++}
++
++# ΓöÇΓöÇ Session helpers ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
++
++def get_session(phone: str) -> dict | None:
++    if not redis:
++        return None
++    try:
++        raw = redis.get(f'survey:state:{phone}')
++        return json.loads(raw) if raw else None
++    except Exception:
++        return None
++
++def set_session(phone: str, data: dict):
++    if not redis:
++        return
++    try:
++        redis.set(f'survey:state:{phone}', json.dumps(data), ex=SESSION_TTL)
++    except Exception:
++        pass
++
++def clear_session(phone: str):
++    if not redis:
++        return
++    try:
++        redis.delete(f'survey:state:{phone}')
++    except Exception:
++        pass
++
++def is_in_survey_session(phone: str) -> bool:
++    return get_session(phone) is not None
++
++# ΓöÇΓöÇ Main router ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
++
++async def handle_survey_message(phone: str, text: str = None, audio_bytes: bytes = None):
++    """
++    Routes the message to the correct stage based on session state.
++    Stage 1 ΓÇö no session yet:         show menu
++    Stage 2 ΓÇö session stage=menu:     process menu selection
++    Stage 3 ΓÇö session stage=awaiting_voice: process voice note
++    """
++    # If redis isn't configured, we can't run stateful surveys
++    if not redis:
++        send_whatsapp(phone, "Survey mode is not available right now. Please notify your supervisor.")
++        return
++
++    session = get_session(phone)
++
++    # CANCEL at any point
++    if text and text.strip().upper() == 'CANCEL':
++        clear_session(phone)
++        send_whatsapp(phone, 'Survey cancelled. Send SURVEY anytime to start again.')
++        return
++
++    # Stage 1 ΓÇö no session, SURVEY keyword received ΓåÆ show menu
++    if session is None:
++        set_session(phone, {'stage': 'menu', 'survey_type': None})
++        send_whatsapp(phone, MENU_MESSAGE)
++        return
++
++    # Stage 2 ΓÇö worker is choosing from the menu
++    if session['stage'] == 'menu':
++        choice = text.strip() if text else ''
++        survey_type = SURVEY_TYPES.get(choice)
++
++        if not survey_type:
++            send_whatsapp(phone, 'Please reply with 1, 2, 3, or 4 to choose a survey type. Type CANCEL to exit.')
++            return
++
++        set_session(phone, {'stage': 'awaiting_voice', 'survey_type': survey_type})
++        send_whatsapp(phone, CONFIRM_MESSAGES[survey_type])
++        return
++
++    # Stage 3 ΓÇö worker has selected survey type, now sends voice note
++    if session['stage'] == 'awaiting_voice':
++        survey_type = session['survey_type']
++
++        if not audio_bytes:
++            send_whatsapp(phone, 'Please send a voice note with your survey findings. Type CANCEL to exit.')
++            return
++
++        send_whatsapp(phone, f"Processng {survey_type.replace('_', ' ').title()}...")
++
++        # Transcribe
++        transcript = await transcribe_audio(audio_bytes)
++
++        # Extract using survey-specific Claude prompt
++        extracted = await extract_survey_data(transcript, survey_type)
++
++        # Validate and apply referral rules
++        try:
++            validated = validate_survey(extracted)
++        except Exception as e:
++            print(f"[SURVEY] Validation failed: {e}")
++            send_whatsapp(phone, "Failed to analyze survey data. Please try again or type CANCEL.")
++            return
++
++        # Write to Supabase records table with survey_type column
++        try:
++            record = supabase.table('records').insert({
++                'worker_id': phone,
++                'visit_type': 'survey',
++                'survey_type': survey_type,
++                'extracted_fields': validated,
++                'sync_status': 'pending',
++            }).execute().data[0]
++        except Exception as e:
++            print(f"[SURVEY] Supabase insert failed: {e}")
++            send_whatsapp(phone, "Failed to save survey record database error.")
++            return
++
++        # Audit chain
++        try:
++            create_audit_entry(record, worker_id=phone)
++        except Exception as e:
++            print(f"[SURVEY] Audit log failed: {e}")
++
++        # Write referral alerts to alerts table
++        for alert in validated.get('_referral_alerts', []):
++            try:
++                supabase.table('alerts').insert({
++                    'worker_phone': phone, # Schema mismatch protection vs prompt: using worker_phone
++                    'flag_type': alert['flag_type'],
++                    'severity': alert['severity'],
++                    'flag_reason': alert['flag_reason'],
++                    'dismissed': False,
++                }).execute()
++            except Exception as e:
++                print(f"[SURVEY] Alert insert failed: {e}")
++
++        # Send worker confirmation
++        send_whatsapp(phone, build_survey_confirmation(validated, survey_type))
++
++        # Send referral alert to worker if needed
++        worker_alert = build_worker_referral_alert(validated, survey_type)
++        if worker_alert:
++            send_whatsapp(phone, worker_alert)
++
++        # Send referral alert to supervisor if needed
++        supervisor_alert = build_supervisor_referral_alert(validated, survey_type, worker_name=phone)
++        if supervisor_alert:
++            try:
++                supervisor = supabase.table('workers').select('phone').eq('role', 'supervisor').limit(1).execute()
++                if supervisor.data:
++                    send_whatsapp(supervisor.data[0]['phone'], supervisor_alert)
++            except Exception as e:
++                print(f"[SURVEY] Failed to alert supervisor: {e}")
++
++        # Clear session ΓÇö one survey per session
++        clear_session(phone)
++        return
+diff --git a/app/survey_notifications.py b/app/survey_notifications.py
+new file mode 100644
+index 0000000..c5611bc
+--- /dev/null
++++ b/app/survey_notifications.py
+@@ -0,0 +1,73 @@
++"""
++app/survey_notifications.py
++---------------------------
++Builds confirmation and alert messages for survey sessions.
++"""
++
++def build_survey_confirmation(extracted: dict, survey_type: str) -> str:
++    label = {
++        'leprosy':    'Leprosy Survey',
++        'pulse_polio': 'Pulse Polio Survey',
++        'above_30':   'Above 30 Screening',
++        'pregnant':   'Pregnant Ladies Survey',
++    }.get(survey_type, 'Survey')
++
++    lines = [f'*{label} Logged Γ£ô*']
++
++    if survey_type == 'leprosy':
++        lines.append(f"Members screened: {extracted.get('total_members_screened', 'ΓÇö')}")
++        lines.append(f"Rashes found: {extracted.get('members_with_rashes', 0)}")
++        r = extracted.get('referral_count', 0)
++        if r:
++            lines.append(f"ΓÜá∩╕Å {r} person(s) referred to PHC ΓÇö rash + sensation loss confirmed")
++
++    elif survey_type == 'pulse_polio':
++        lines.append(f"Children under 5: {extracted.get('children_under_5_count', 'ΓÇö')}")
++        lines.append(f"Vaccinated today: {extracted.get('children_vaccinated', 'ΓÇö')}")
++        if extracted.get('house_marked_for_followup'):
++            lines.append('≡ƒôî House marked for follow-up visit')
++        d = extracted.get('deferred_count', 0)
++        if d:
++            lines.append(f"ΓÅ│ {d} child(ren) deferred ΓÇö revisit when recovered")
++
++    elif survey_type == 'above_30':
++        lines.append(f"People screened: {extracted.get('total_screened', 'ΓÇö')}")
++        r = extracted.get('referral_count', 0)
++        if r:
++            lines.append(f"ΓÜá∩╕Å {r} person(s) referred to PHC ΓÇö 2+ abnormal vitals")
++
++    elif survey_type == 'pregnant':
++        lines.append(f"Beneficiary: {extracted.get('beneficiary_name', 'ΓÇö')}")
++        if extracted.get('anemia_flag'):
++            lines.append(f"ΓÜá∩╕Å Anemia ΓÇö Hb {extracted.get('hemoglobin')} g/dL (below 11)")
++        if extracted.get('hypertension_flag'):
++            lines.append(f"ΓÜá∩╕Å Hypertension ΓÇö BP {extracted.get('bp_systolic')}/{extracted.get('bp_diastolic')} mmHg")
++        if extracted.get('referred_to_phc'):
++            lines.append('≡ƒÜ¿ Refer to PHC immediately')
++
++    lines.append(f"Record synced Γ£ô")
++    return '\n'.join(lines)
++
++
++def build_worker_referral_alert(extracted: dict, survey_type: str) -> str | None:
++    alerts = extracted.get('_referral_alerts', [])
++    high_alerts = [a for a in alerts if a['severity'] == 'high']
++    if not high_alerts:
++        return None
++    lines = ['≡ƒÜ¿ *Referral Required*']
++    for a in high_alerts:
++        lines.append(f"ΓåÆ {a['flag_reason']}")
++    lines.append('Please send the patient to the nearest PHC now.')
++    return '\n'.join(lines)
++
++
++def build_supervisor_referral_alert(extracted: dict, survey_type: str, worker_name: str) -> str | None:
++    alerts = extracted.get('_referral_alerts', [])
++    high_alerts = [a for a in alerts if a['severity'] == 'high']
++    if not high_alerts:
++        return None
++    label = survey_type.replace('_', ' ').title()
++    lines = [f'ΓÜá∩╕Å *{label} Referral Alert*', f'Worker: {worker_name}']
++    for a in high_alerts:
++        lines.append(f"ΓÇó {a['flag_reason']}")
++    return '\n'.join(lines)
+diff --git a/app/survey_validation.py b/app/survey_validation.py
+new file mode 100644
+index 0000000..1990340
+--- /dev/null
++++ b/app/survey_validation.py
+@@ -0,0 +1,119 @@
++"""
++app/survey_validation.py
++------------------------
++Applies medical rules to extracted survey data to generate alerts/referrals.
++"""
++
++def validate_leprosy_survey(extracted: dict) -> dict:
++    alerts = []
++    for person in extracted.get('rash_details', []):
++        if person.get('sensation_test_result') == 'loss_of_sensation':
++            alerts.append({
++                'flag_type': 'leprosy_referral',
++                'severity': 'high',
++                'flag_reason': (
++                    f"Leprosy suspect: {person.get('person_name', 'unknown')} ΓÇö "
++                    f"rash + loss of sensation confirmed. Refer to PHC immediately."
++                ),
++            })
++    extracted['_referral_alerts'] = alerts
++    return extracted
++
++
++def validate_pulse_polio_survey(extracted: dict) -> dict:
++    alerts = []
++    if extracted.get('house_marked_for_followup'):
++        if extracted.get('guest_children_vaccinated') is False:
++            reason = 'unvaccinated guest children present'
++        else:
++            reason = 'children under 5 not yet vaccinated'
++        alerts.append({
++            'flag_type': 'polio_followup',
++            'severity': 'medium',
++            'flag_reason': f"Pulse Polio follow-up required ΓÇö {reason}.",
++        })
++    for child in extracted.get('deferred_children', []):
++        alerts.append({
++            'flag_type': 'polio_deferred',
++            'severity': 'low',
++            'flag_reason': (
++                f"Polio dose deferred for {child.get('person_name', 'child')} "
++                f"due to {child.get('reason', 'illness')}. Revisit when recovered."
++            ),
++        })
++    extracted['_referral_alerts'] = alerts
++    return extracted
++
++
++def validate_above_30_survey(extracted: dict) -> dict:
++    alerts = []
++    referral_count = 0
++    for person in extracted.get('screenings', []):
++        abnormal_flags = []
++
++        bp_sys = person.get('bp_systolic')
++        bp_dia = person.get('bp_diastolic')
++        if (bp_sys and bp_sys > 140) or (bp_dia and bp_dia > 90):
++            abnormal_flags.append(f"High BP {bp_sys}/{bp_dia} mmHg")
++
++        sugar = person.get('blood_sugar_value')
++        sugar_type = person.get('blood_sugar_type')
++        if sugar:
++            if sugar_type == 'fasting' and sugar > 126:
++                abnormal_flags.append(f"High fasting sugar {sugar} mg/dL")
++            elif sugar_type in ('random', 'post_prandial') and sugar > 200:
++                abnormal_flags.append(f"High {sugar_type} sugar {sugar} mg/dL")
++
++        if person.get('other_complaints'):
++            abnormal_flags.append(f"Complaints: {person['other_complaints']}")
++
++        # Referral only if 2 or more abnormal values simultaneously
++        if len(abnormal_flags) >= 2:
++            person['referred_to_phc'] = True
++            person['referral_reason'] = '; '.join(abnormal_flags)
++            referral_count += 1
++            alerts.append({
++                'flag_type': 'above_30_referral',
++                'severity': 'high',
++                'flag_reason': (
++                    f"Refer {person.get('person_name', 'patient')} "
++                    f"(age {person.get('age', '?')}) to PHC ΓÇö {person['referral_reason']}"
++                ),
++            })
++
++    extracted['referral_count'] = referral_count
++    extracted['_referral_alerts'] = alerts
++    return extracted
++
++
++def validate_pregnant_survey(extracted: dict) -> dict:
++    # Reuses existing ANC thresholds ΓÇö flags are already set by Claude in the prompt
++    alerts = []
++    if extracted.get('referred_to_phc'):
++        alerts.append({
++            'flag_type': 'pregnant_survey_referral',
++            'severity': 'high',
++            'flag_reason': (
++                f"Pregnant survey referral: "
++                f"{extracted.get('beneficiary_name', 'patient')} ΓÇö "
++                f"{extracted.get('referral_reason', 'abnormal vitals detected')}"
++            ),
++        })
++    extracted['_referral_alerts'] = alerts
++    return extracted
++
++
++SURVEY_VALIDATORS = {
++    'leprosy':    validate_leprosy_survey,
++    'pulse_polio': validate_pulse_polio_survey,
++    'above_30':   validate_above_30_survey,
++    'pregnant':   validate_pregnant_survey,
++}
++
++
++def validate_survey(extracted: dict) -> dict:
++    survey_type = extracted.get('survey_type')
++    validator = SURVEY_VALIDATORS.get(survey_type)
++    if not validator:
++        raise ValueError(f"Unknown survey type: {survey_type}")
++    return validator(extracted)
+diff --git a/app/webhook.py b/app/webhook.py
+index 73fbdf5..8c45cc4 100644
+--- a/app/webhook.py
++++ b/app/webhook.py
+@@ -23,6 +23,31 @@ async def twilio_webhook(
+     webhook_log = process_webhook_entry(Body, sender_phone)
+     clean_body = webhook_log['body_text']
+ 
++    # --- Survey Mode Routing (Intercepts before normal pipeline) ---
++    from app.survey_handler import is_in_survey_session, handle_survey_message
++    
++    # Check if worker is already in a survey session
++    if is_in_survey_session(sender_phone):
++        audio_bytes = None
++        if int(NumMedia) > 0 and MediaUrl0 and 'audio' in (MediaContentType0 or ''):
++            audio_bytes = await download_twilio_media(MediaUrl0)
++            
++        await handle_survey_message(sender_phone, text=clean_body, audio_bytes=audio_bytes)
++        return '<Response></Response>'
++
++    # Check if worker is starting a new survey session
++    if clean_body.strip().upper() == 'SURVEY':
++        await handle_survey_message(sender_phone, text=clean_body)
++        return '<Response></Response>'
++
++    # --- SOS Emergency Check ---
++    # Uses original Body (not clean_body) so PII stripping doesn't corrupt keyword.
++    # Silent response ΓÇö no confirmation sent back to protect the worker.
++    from app.sos import is_sos_trigger, handle_sos
++    if is_sos_trigger(Body):
++        await handle_sos(sender_phone)
++        return '<Response></Response>'
++
+     # Handle STOP / RECORD consent commands before routing to pipeline
+     if Body.strip().upper() in ('STOP', 'RECORD'):
+         consent_action = handle_consent_logic(Body)
+diff --git a/data/survey_prompt_above_30.txt b/data/survey_prompt_above_30.txt
+new file mode 100644
+index 0000000..a0944d5
+--- /dev/null
++++ b/data/survey_prompt_above_30.txt
+@@ -0,0 +1,41 @@
++You are a medical data extraction system for Kerala ASHA workers conducting health screenings for people above 30 years old.
++Extract structured data from the worker's voice summary. The worker may have screened multiple people in one household.
++
++Return ONLY valid JSON with no markdown, no explanation.
++
++JSON schema:
++{
++  "survey_type": "above_30",
++  "house_id": string or null,
++  "total_screened": integer or null,
++  "screenings": [
++    {
++      "person_name": string or null,
++      "age": integer or null,
++      "gender": "male" | "female" | "other" | null,
++      "bp_systolic": integer or null,
++      "bp_diastolic": integer or null,
++      "blood_sugar_type": "fasting" | "random" | "post_prandial" | null,
++      "blood_sugar_value": float or null,
++      "other_complaints": string or null,
++      "referred_to_phc": boolean,
++      "referral_reason": string or null
++    }
++  ],
++  "referral_count": integer,
++  "worker_notes": string or null,
++  "confidence": float between 0 and 1
++}
++
++Rules:
++- referred_to_phc for a person is true ONLY IF TWO OR MORE of the following are true simultaneously:
++    1. bp_systolic > 140 OR bp_diastolic > 90
++    2. blood_sugar_value > 126 (if fasting) OR blood_sugar_value > 200 (if random or post_prandial)
++    3. worker explicitly mentions other abnormal complaints that warrant referral
++- If only ONE value is abnormal ΓåÆ referred_to_phc is false, worker should monitor
++- referral_reason must clearly state which two or more values triggered the referral
++- referral_count is the total count of people with referred_to_phc true
++- Malayalam terms: raktha sammardam = blood pressure/BP, chukar/madhuram = sugar/diabetes, BP normal/abnormal aanu, pani = fever (context-dependent), muppe khazhinja = above 30 years
++- BP values are in mmHg, blood sugar in mg/dL unless stated otherwise
++- Numbers may be in Malayalam: onnu=1, randu=2, moonnu=3, naalu=4, anchu=5, aaru=6, ezhu=7, ettu=8, ompadu=9, pathu=10
++- Return confidence as overall extraction confidence across all fields
+diff --git a/data/survey_prompt_leprosy.txt b/data/survey_prompt_leprosy.txt
+new file mode 100644
+index 0000000..27a53bd
+--- /dev/null
++++ b/data/survey_prompt_leprosy.txt
+@@ -0,0 +1,35 @@
++You are a medical data extraction system for Kerala ASHA workers conducting leprosy surveys.
++Extract structured data from the worker's voice summary. The worker has surveyed one household.
++
++Return ONLY valid JSON with no markdown, no explanation.
++
++JSON schema:
++{
++  "survey_type": "leprosy",
++  "house_id": string or null,
++  "total_members_screened": integer or null,
++  "members_with_rashes": integer or null,
++  "rash_details": [
++    {
++      "person_name": string or null,
++      "age": integer or null,
++      "rash_location": string or null,
++      "sensation_test_done": boolean or null,
++      "sensation_test_result": "loss_of_sensation" | "normal" | null,
++      "referred_to_phc": boolean
++    }
++  ],
++  "referral_required": boolean,
++  "referral_count": integer,
++  "worker_notes": string or null,
++  "confidence": float between 0 and 1
++}
++
++Rules:
++- sensation_test_done refers to the pin-prick test for loss of sensation
++- If anyone has rashes AND loss of sensation ΓåÆ set referred_to_phc true for that person and referral_required true
++- If rashes present but sensation test normal ΓåÆ referred_to_phc false
++- If sensation test result is uncertain ΓåÆ set confidence below 0.7
++- Malayalam terms: tholil murivu = skin rash, vednayilla = no pain/sensation loss, PHC-il ayakkanam = refer to PHC, murivu = wound/rash
++- Numbers may be in Malayalam: onnu=1, randu=2, moonnu=3, naalu=4, anchu=5, aaru=6, ezhu=7, ettu=8, ompadu=9, pathu=10
++- Return confidence as overall extraction confidence across all fields
+diff --git a/data/survey_prompt_pregnant.txt b/data/survey_prompt_pregnant.txt
+new file mode 100644
+index 0000000..ae58345
+--- /dev/null
++++ b/data/survey_prompt_pregnant.txt
+@@ -0,0 +1,41 @@
++You are a medical data extraction system for Kerala ASHA workers conducting surveys of pregnant women.
++This survey uses the same fields as a routine ANC visit. Extract all available data from the worker's voice summary.
++
++Return ONLY valid JSON with no markdown, no explanation.
++
++JSON schema:
++{
++  "survey_type": "pregnant",
++  "house_id": string or null,
++  "beneficiary_name": string or null,
++  "age": integer or null,
++  "gestational_age_weeks": integer or null,
++  "bp_systolic": integer or null,
++  "bp_diastolic": integer or null,
++  "hemoglobin": float or null,
++  "weight_kg": float or null,
++  "iron_tablets_given": integer or null,
++  "anc_visit_number": integer or null,
++  "tt_vaccination_status": "TT1" | "TT2" | "Booster" | "not_given" | null,
++  "urine_albumin_test": "positive" | "negative" | null,
++  "counselling_topics": [string] or [],
++  "next_visit_date": string (ISO date YYYY-MM-DD) or null,
++  "next_visit_location": string or null,
++  "anemia_flag": boolean,
++  "hypertension_flag": boolean,
++  "referred_to_phc": boolean,
++  "referral_reason": string or null,
++  "scheme_eligibility_check": boolean,
++  "worker_notes": string or null,
++  "confidence": float between 0 and 1
++}
++
++Rules:
++- anemia_flag is true if hemoglobin < 11.0 g/dL
++- hypertension_flag is true if bp_systolic > 140 OR bp_diastolic > 90
++- referred_to_phc is true if ANY of the following: bp_systolic > 160, bp_diastolic > 110, hemoglobin < 7.0 (severe anemia), urine_albumin_test is positive
++- scheme_eligibility_check always set to true ΓÇö downstream agent handles PMMVY/JSY/JSSK eligibility automatically
++- This is a home survey context ΓÇö treat identically to an ANC visit record for all downstream processing
++- Malayalam terms: BP / raktha sammardam = blood pressure, Hb / hemoglobin / chora = haemoglobin, IFA / iron tablets = iron_tablets_given, thukkam = weight, aduttha visit = next_visit_date, garbha kalam = pregnancy/gestational details
++- Numbers may be in Malayalam: onnu=1, randu=2, moonnu=3, naalu=4, anchu=5, aaru=6, ezhu=7, ettu=8, ompadu=9, pathu=10
++- Return confidence as overall extraction confidence across all fields
+diff --git a/data/survey_prompt_pulse_polio.txt b/data/survey_prompt_pulse_polio.txt
+new file mode 100644
+index 0000000..5292c8d
+--- /dev/null
++++ b/data/survey_prompt_pulse_polio.txt
+@@ -0,0 +1,38 @@
++You are a medical data extraction system for Kerala ASHA workers conducting Pulse Polio surveys.
++Extract structured data from the worker's voice summary of one household visit.
++
++Return ONLY valid JSON with no markdown, no explanation.
++
++JSON schema:
++{
++  "survey_type": "pulse_polio",
++  "house_id": string or null,
++  "children_under_5_count": integer or null,
++  "children_vaccinated": integer or null,
++  "guests_present": boolean or null,
++  "guest_children_under_5_count": integer or null,
++  "guest_children_vaccinated": boolean or null,
++  "house_marked_for_followup": boolean,
++  "vaccination_date": string (ISO date YYYY-MM-DD) or null,
++  "finger_marked": boolean or null,
++  "deferred_children": [
++    {
++      "person_name": string or null,
++      "age_months": integer or null,
++      "reason": "fever" | "vomiting" | "diarrhoea" | "other" | null
++    }
++  ],
++  "deferred_count": integer,
++  "worker_notes": string or null,
++  "confidence": float between 0 and 1
++}
++
++Rules:
++- If any child under 5 (including guest children) has NOT received the polio vaccine ΓåÆ house_marked_for_followup true
++- If guest children were present and vaccination status is unknown ΓåÆ house_marked_for_followup true
++- If a child has fever, vomiting, or diarrhoea ΓåÆ add to deferred_children, do NOT count as vaccinated
++- finger_marked means the physical ink mark was made on the child's finger confirming dose given
++- vaccination_date is the date the visit occurred ΓÇö extract from context or set null
++- Malayalam terms: kunjungal = children, marunnu = medicine/vaccine, viral = finger mark, atithi/visitoru = guests, pani = fever, odi = vomiting, pokkuvayal = diarrhoea, anchu vayadinu tazhe = below 5 years
++- Numbers may be in Malayalam: onnu=1, randu=2, moonnu=3, naalu=4, anchu=5, aaru=6, ezhu=7, ettu=8, ompadu=9, pathu=10
++- Return confidence as overall extraction confidence across all fields
